@@ -1,0 +1,26 @@
+{
+  "name": "Yuki-Tomo",
+  "short_name": "Yuki-Tomo",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#070d17",
+  "theme_color": "#070d17",
+  "lang": "ja",
+  "description": "雪でつながる、友達と成長。SAJ選手カードとポイント。",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
