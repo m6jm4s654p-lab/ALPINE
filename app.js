@@ -13,7 +13,7 @@ function save(){dirty=true;const snapshot=JSON.parse(JSON.stringify(state));writ
 function validAvatar(a){return Number.isInteger(a)&&a>=0&&a<100}
 function validId(id){return /^\d{8}$/.test(id)}
 function validUrl(raw){try{const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password?u.href:null}catch{return null}}
-function who(id){return roster.find(r=>r.id===id)||state.profiles[id]||null}
+function who(id){return state.profiles[id]||roster.find(r=>r.id===id)||null}
 function encodeCard(id,a){if(!validId(id)||!validAvatar(a))throw Error('カード情報が不正です');return `AC3:${id}:${a}`}
 function decodeCard(raw){const p=raw.trim().split(':');if(p.length!==3||p[0]!=='AC3'||!validId(p[1])||!/^\d{1,2}$/.test(p[2])||!validAvatar(+p[2]))throw Error('QRの文字列（AC3:競技者番号:アバター番号）を入力してください。');return {id:p[1],avatar:+p[2]}}
 function point(v){return typeof v==='number'&&Number.isFinite(v)?v.toFixed(2):'—'}
@@ -27,23 +27,31 @@ function validateDataset(d){
 }
 function applyDataset(d){
  dataset=d;roster=d.athletes;
- for(const id of [state.me,...state.rivals.map(r=>r.id)].filter(Boolean)){const person=roster.find(a=>a.id===id);if(person)state.profiles[id]={...person,listLabel:`${d.season} No.${d.listNumber}`}}
+ for(const id of [state.me,...state.rivals.map(r=>r.id)].filter(Boolean)){const person=roster.find(a=>a.id===id);if(person&&!state.profiles[id])state.profiles[id]={...person,listLabel:`${d.season} No.${d.listNumber}`}}
  const me=roster.find(a=>a.id===state.me);
- if(me){const key=`${me.id}:${d.season}:${d.listNumber}`,entry={key,label:`${d.season} No.${d.listNumber}`,points:me.points};state.history=state.history.filter(x=>x.key!==key);state.history.push(entry);state.history=state.history.slice(-24)}
+ if(me&&!state.profiles[me.id]?.checkedAt){const key=`${me.id}:${d.season}:${d.listNumber}`,entry={key,label:`${d.season} No.${d.listNumber}`,points:me.points};state.history=state.history.filter(x=>x.key!==key);state.history.push(entry);state.history=state.history.slice(-24)}
  const oldPref=q('#cy-pref').value;prefs();if([...q('#cy-pref').options].some(o=>o.value===oldPref))q('#cy-pref').value=oldPref;
  if(screen==='register')candidates();render();
 }
 function prefs(){const values=[...new Set(roster.map(a=>a.pref).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));q('#cy-pref').replaceChildren();for(const pref of values){const o=document.createElement('option');o.value=o.textContent=pref;q('#cy-pref').append(o)}if(values.includes('岩手'))q('#cy-pref').value='岩手'}
+const API='https://snowtech-saj-api.take6583.workers.dev';
+function weekBoundary(now=Date.now()){const d=new Date(now+9*3600000);d.setUTCHours(0,0,0,0);d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+3)%7);return d.getTime()-9*3600000}
+function profileMeta(p){return p?.checkedAt?`${p.listLabel} · 取得 ${dateText(p.checkedAt)}`:`初期データ · ${metadata()}`}
+async function api(path){const r=await fetch(API+path,{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(45000)});if(!r.ok)throw Error('SAJ通信エラー');const d=await r.json();if(!d.ok)throw Error('SAJ取得失敗');return d}
+function normalized(a,meta={}){const id=String(a.saj),old=who(id)||{};if(!validId(id)||!a.name)throw Error('選手情報不正');return {id,name:a.name,team:a.team||old.team||'',pref:meta.pref||a.organization||old.pref||'',sex:meta.sex||(a.sex==='女'?'女子':'男子'),category:old.category||'未確認',points:old.points||{SL:null,GS:null,SG:null}}}
+async function loadPerson(id){const d=await api('/api/saj-athlete?saj='+encodeURIComponent(id));state.profiles[id]=normalized(d.athlete);}
+async function updatePoints(id){const d=await api('/api/saj-athlete-points?saj='+id),p=d.points,old=who(id);if(!old||p.saj!==id||!Number.isInteger(p.pointSeasonCode)||!Number.isInteger(p.pointListNumber))throw Error('形式不正');const points={};for(const k of ['SL','GS','SG']){const v=p[k.toLowerCase()];if(v!==null&&(typeof v!=='number'||!Number.isFinite(v)||v<0))throw Error('ポイント不正');points[k]=v}if(old.pointSeasonCode&&(p.pointSeasonCode<old.pointSeasonCode||(p.pointSeasonCode===old.pointSeasonCode&&p.pointListNumber<old.pointListNumber)))throw Error('旧リスト');state.profiles[id]={...old,points,pointSeasonCode:p.pointSeasonCode,pointListNumber:p.pointListNumber,listLabel:`${p.pointSeasonCode} No.${p.pointListNumber}`,checkedAt:new Date().toISOString()};if(id===state.me){const key=`${id}:${p.pointSeasonCode}:${p.pointListNumber}`;state.history=state.history.filter(h=>h.key!==key);state.history.push({key,label:state.profiles[id].listLabel,points});state.history=state.history.slice(-24)}save()}
+const attempts=new Map();
 async function refresh(force=false){
- if(refreshing)return refreshing;
- if(!force&&Date.now()-lastAttempt<60*60*1000)return;
- lastAttempt=Date.now();notice='SAJデータを確認しています…';render();
- refreshing=(async()=>{try{
-  const response=await fetch('./saj-data.json',{cache:'no-store',signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('通信エラー');const d=validateDataset(await response.json());
-  if(dataset&&(d.season<dataset.season||(d.season===dataset.season&&d.listNumber<dataset.listNumber)||Date.parse(d.checkedAt)<Date.parse(dataset.checkedAt)))throw Error('新しいデータを確認できません');
-  notice='取得済みの最新SAJリストを表示中。公式データは毎週木曜に自動確認します。';applyDataset(d);save();const db=await dbReady;if(db&&!await write(db,'settings','saj-dataset',d))q('#cy-storage').textContent='データを端末に保存できませんでした。';
- }catch(e){notice=dataset?'更新を確認できません。前回取得したデータを表示しています。':'SAJデータを取得できません。通信を確認し、再度「最新データを確認」を押してください。';}finally{refreshing=null;render()}})();return refreshing;
+ if(refreshing){await refreshing;return refresh(force)}
+ const ids=[...new Set([state.me,...state.rivals.map(r=>r.id)].filter(Boolean))].filter(id=>force||((Date.parse(who(id)?.checkedAt)||0)<weekBoundary()&&Date.now()-(attempts.get(id)||0)>600000));
+ if(!ids.length)return;
+ notice='この端末のSAJポイントを更新しています…';
+ refreshing=(async()=>{let failed=0;const queue=[...ids];await Promise.all(Array.from({length:Math.min(3,ids.length)},async()=>{while(queue.length){const id=queue.shift();attempts.set(id,Date.now());try{await updatePoints(id)}catch{failed++}}}));notice=failed?`${failed}名の更新を確認できません。前回のデータを保持しています。`:'この端末のSAJポイントを確認しました。次回は木曜以降の起動・表示時に更新します。';})().finally(()=>{refreshing=null;render()});render();return refreshing;
 }
+let candidatesRequest=0;const candidateChecks=new Map();
+async function loadCandidates(){const pref=q('#cy-pref').value,sex=q('#cy-sex').value,key=pref+sex,request=++candidatesRequest;if(!pref||candidateChecks.get(key)>=weekBoundary())return;q('#cy-register-status').textContent='SAJの選手一覧を取得しています…';try{const d=await api('/api/saj-athletes?sex='+encodeURIComponent(sex==='女子'?'女':'男')+'&organization='+encodeURIComponent(pref));if(!Array.isArray(d.athletes)||!d.athletes.length)throw Error();const people=d.athletes.map(a=>normalized(a,{pref,sex}));const fresh=new Map(people.map(a=>[a.id,a]));roster=roster.filter(a=>!fresh.has(a.id)).concat(people);candidateChecks.set(key,Date.now());if(request===candidatesRequest&&screen==='register'){candidates();q('#cy-register-status').textContent=`SAJ一覧取得済み · ${people.length}名（検索で絞り込み）`}}catch{if(request===candidatesRequest)q('#cy-register-status').textContent='最新一覧を取得できません。保存済みの選手から選択できます。'}}
+
 const themePalettes=[
  ['さくら','#fff0f6','#ffc9df','#dabbff','#452442','#73516b'],
  ['ソーダ','#e8fbff','#b2e9ff','#d1ccff','#1e3955','#4b637d'],
@@ -84,7 +92,7 @@ function renderThemes(){
 function appendCardPoints(panel,id){
  const person=who(id),grid=document.createElement('div');grid.className='point-grid';grid.setAttribute('aria-label','SAJ SL GS SGポイント');
  for(const k of ['SL','GS','SG']){const cell=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong');label.textContent=k;value.textContent=point(person?.points?.[k]);cell.append(label,value);grid.append(cell)}panel.append(grid);
- const meta=document.createElement('p');meta.className='note';meta.textContent=roster.some(a=>a.id===id)?metadata():`今回のリストに未掲載。前回の情報 ${person?.listLabel||'なし'}`;panel.append(meta);
+ const meta=document.createElement('p');meta.className='note';meta.textContent=profileMeta(person);panel.append(meta);
 }
 function avatar(canvas,id){if(!validAvatar(id))id=0;canvas.dataset.avatar=id;const draw=()=>{if(Number(canvas.dataset.avatar)!==id)return;const im=atlases[Math.floor(id/50)];if(!im.complete||!im.naturalWidth)return;const n=id%50,w=im.naturalWidth/10,h=im.naturalHeight/5,c=canvas.getContext('2d');c.clearRect(0,0,canvas.width,canvas.height);c.drawImage(im,n%10*w+1,Math.floor(n/10)*h+1,w-2,h-2,0,0,canvas.width,canvas.height)};const im=atlases[Math.floor(id/50)];if(im.complete)draw();else im.addEventListener('load',draw,{once:true})}
 function avatarCanvas(id,size=256){const c=document.createElement('canvas');c.width=c.height=size;c.className='avatar';c.setAttribute('role','img');c.setAttribute('aria-label',`アバター ${id+1}`);avatar(c,id);return c}
@@ -107,12 +115,12 @@ function chart(){
 }
 function stats(){
  const me=who(state.me);q('#cy-me').textContent=me?`${me.name} · ${me.category} · ${me.sex} · ${me.pref}`:'タイトル画面から自分の選手を登録してください。';
- q('#cy-data-meta').textContent=metadata();q('#cy-data-status').textContent=notice;q('#cy-refresh').disabled=!!refreshing;
+ q('#cy-data-meta').textContent=profileMeta(me);q('#cy-data-status').textContent=notice;q('#cy-refresh').disabled=!!refreshing;
  const body=q('#cy-stats');body.replaceChildren();
  const row=(name,values)=>{const tr=document.createElement('tr'),th=document.createElement('th');th.scope='row';th.textContent=name;tr.append(th);for(const v of values){const td=document.createElement('td');td.textContent=v;tr.append(td)}body.append(tr)};
  row('所持pt',['SL','GS','SG'].map(k=>point(me?.points?.[k])));
- const current=roster.find(a=>a.id===state.me);
- for(const label of ['県内','全国']){row(label,['SL','GS','SG'].map(k=>{if(!current||current.category==='未確認'||current.points[k]===null)return '—';const peers=roster.filter(a=>a.sex===current.sex&&a.category===current.category&&(label==='全国'||a.pref===current.pref));return (1+peers.filter(a=>a.points[k]!==null&&a.points[k]<current.points[k]).length)+'位'}))}
+ const current=dataset?.athletes.find(a=>a.id===state.me);
+ for(const label of ['県内','全国']){row(label+'（初期リスト）',['SL','GS','SG'].map(k=>{if(!current||current.category==='未確認'||current.points[k]===null)return '—';const peers=dataset.athletes.filter(a=>a.sex===current.sex&&a.category===current.category&&(label==='全国'||a.pref===current.pref));return (1+peers.filter(a=>a.points[k]!==null&&a.points[k]<current.points[k]).length)+'位'}))}
  chart();
 }
 function render(){
@@ -128,7 +136,7 @@ function render(){
  if(screen==='rivals'){q('#cy-rivals').replaceChildren();if(!state.rivals.length)q('#cy-rivals').textContent='「友達追加」から友達のカードを追加してください。';for(const r of state.rivals){const host=document.createElement('div');q('#cy-rivals').append(host);card(host,r.id,r.avatar)}}
  if(screen==='share'){const url=validUrl(state.url);q('#cy-share-ready').hidden=!url;q('#cy-share-pending').hidden=!!url;q('#cy-url').value=state.url;if(url){q('#cy-share-url').textContent=url;qr(q('#cy-share-qr'),url)}}
 }
-function go(next){if(!ready)return;if(next==='register'&&screen!=='title')return;screen=next;if(next==='avatar'){draft=state.avatar;gender=Math.floor(draft/50);page=Math.floor(draft%50/25)}if(next==='background'){themeDraft=state.background;themeGroup=Math.floor(themeDraft/50);themePage=Math.floor(themeDraft%50/25)}if(next==='register')candidates();render();if(next!=='title')refresh()}
+function go(next){if(!ready)return;if(next==='register'&&screen!=='title')return;screen=next;if(next==='avatar'){draft=state.avatar;gender=Math.floor(draft/50);page=Math.floor(draft%50/25)}if(next==='background'){themeDraft=state.background;themeGroup=Math.floor(themeDraft/50);themePage=Math.floor(themeDraft%50/25)}if(next==='register'){candidates();loadCandidates()};render();if(next!=='title')refresh()}
 function candidates(){
  selected=null;q('#cy-register').disabled=true;q('#cy-register').textContent='選手を選択してください';q('#cy-candidates').replaceChildren();
  const query=q('#cy-search').value.trim().replace(/\s/g,'');const matches=roster.filter(a=>a.pref===q('#cy-pref').value&&a.sex===q('#cy-sex').value&&(!query||a.name.replace(/\s/g,'').includes(query)||a.id.includes(query)));
@@ -137,15 +145,15 @@ function candidates(){
 }
 all('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
 all('[data-gender]').forEach(b=>b.onclick=()=>{gender=+b.dataset.gender;page=0;picker()});q('#cy-prev').onclick=()=>{page=0;picker()};q('#cy-next').onclick=()=>{page=1;picker()};q('#cy-avatar-save').onclick=()=>{state.avatar=draft;save();go('card')};
-q('#cy-pref').onchange=q('#cy-sex').onchange=q('#cy-search').oninput=candidates;
-q('#cy-register').onclick=()=>{const me=roster.find(a=>a.id===selected);if(!me)return;state.me=me.id;state.registered=true;state.rivals=state.rivals.filter(r=>r.id!==me.id);received=null;q('#cy-ex-status').textContent='';applyDataset(dataset);save();go('card')};
+q('#cy-pref').onchange=q('#cy-sex').onchange=()=>{candidates();loadCandidates()};q('#cy-search').oninput=candidates;
+q('#cy-register').onclick=()=>{const me=roster.find(a=>a.id===selected);if(!me)return;state.me=me.id;state.registered=true;state.rivals=state.rivals.filter(r=>r.id!==me.id);received=null;q('#cy-ex-status').textContent='';state.profiles[me.id]={...me,...state.profiles[me.id]};save();go('card')};
 q('#cy-refresh').onclick=()=>refresh(true);all('[data-theme-group]').forEach(b=>b.onclick=()=>{themeGroup=+b.dataset.themeGroup;themePage=0;renderThemes()});q('#cy-theme-prev').onclick=()=>{themePage=0;renderThemes()};q('#cy-theme-next').onclick=()=>{themePage=1;renderThemes()};q('#cy-theme-save').onclick=()=>{state.background=themeDraft;save();go('card')};
-q('#cy-receive').onclick=()=>{try{received=null;const r=decodeCard(q('#cy-friend-code').value);if(r.id===state.me)throw Error('自分のカードは友達に追加できません。');const person=roster.find(a=>a.id===r.id);if(!person)throw Error('取得済みSAJリストに見つかりません。DATAで最新データを確認してください。');received=r;card(q('#cy-received-card'),r.id,r.avatar,false);q('#cy-received').hidden=false;q('#cy-ex-status').textContent='この選手を友達一覧に追加します。'}catch(e){q('#cy-received').hidden=true;q('#cy-ex-status').textContent=e.message}};
-q('#cy-add').onclick=()=>{if(!received)return;const idx=state.rivals.findIndex(r=>r.id===received.id);if(idx<0)state.rivals.push({...received});else state.rivals[idx]={...received};state.profiles[received.id]={...who(received.id),listLabel:`${dataset.season} No.${dataset.listNumber}`};received=null;save();go('rivals')};
+q('#cy-receive').onclick=async()=>{try{received=null;const r=decodeCard(q('#cy-friend-code').value);if(r.id===state.me)throw Error('自分のカードは友達に追加できません。');if(!who(r.id))await loadPerson(r.id);const person=who(r.id);if(!person)throw Error('取得済みSAJリストに見つかりません。DATAで最新データを確認してください。');received=r;card(q('#cy-received-card'),r.id,r.avatar,false);q('#cy-received').hidden=false;q('#cy-ex-status').textContent='この選手を友達一覧に追加します。'}catch(e){q('#cy-received').hidden=true;q('#cy-ex-status').textContent=e.message}};
+q('#cy-add').onclick=()=>{if(!received)return;const idx=state.rivals.findIndex(r=>r.id===received.id);if(idx<0)state.rivals.push({...received});else state.rivals[idx]={...received};state.profiles[received.id]={...who(received.id),listLabel:who(received.id).listLabel||`${dataset.season} No.${dataset.listNumber}`};received=null;save();go('rivals')};
 q('#cy-camera').onclick=()=>q('#cy-camera-file').click();q('#cy-gallery').onclick=()=>q('#cy-gallery-file').click();q('#cy-camera-file').onchange=q('#cy-gallery-file').onchange=choosePhoto;q('#cy-photo-back').onclick=()=>go(photoBack);
 q('#cy-url-save').onclick=()=>{const url=validUrl(q('#cy-url').value.trim());if(!url){q('#cy-share-status').textContent='https:// で始まる公開URLを入力してください。';return}state.url=url;save();render();q('#cy-share-status').textContent='紹介QRを生成しました。'};
 q('#cy-copy').onclick=async()=>{try{await navigator.clipboard.writeText(state.url);q('#cy-share-status').textContent='URLをコピーしました。'}catch{q('#cy-share-status').textContent='表示URLを長押ししてコピーしてください。'}};
 window.addEventListener('online',()=>{lastAttempt=0;if(screen!=='title')refresh()});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&screen!=='title')refresh()});setInterval(()=>{if(!document.hidden&&screen!=='title')refresh()},60*60*1000);
 new ResizeObserver(()=>{if(screen==='stats')chart()}).observe(q('#cy-chart'));
-(async()=>{const db=await dbReady;if(db){const saved=await read(db,'settings','state');if(saved){if(validAvatar(saved.avatar))state.avatar=saved.avatar;if(validAvatar(saved.background))state.background=saved.background;if(validUrl(saved.url))state.url=saved.url;state.profiles=saved.profiles&&typeof saved.profiles==='object'?saved.profiles:{};state.history=Array.isArray(saved.history)?saved.history:[];if(validId(saved.me)&&!saved.me.startsWith('000000')){state.me=saved.me;state.registered=true}state.rivals=Array.isArray(saved.rivals)?saved.rivals.filter(r=>r&&validId(r.id)&&!r.id.startsWith('000000')&&validAvatar(r.avatar)):[];if(saved.me&&!state.me)q('#cy-storage').textContent='サンプル登録を終了しました。タイトルから実際の選手を登録してください。'}const cached=await read(db,'settings','saj-dataset');if(cached){try{applyDataset(validateDataset(cached));notice='端末の保存データを表示しています。'}catch{}}}else q('#cy-storage').textContent='端末保存が利用できません。';if(location.hostname.endsWith('.github.io'))state.url=new URL('./',location.href).href;ready=true;render();await refresh(true)})();
+(async()=>{const db=await dbReady;if(db){const saved=await read(db,'settings','state');if(saved){if(validAvatar(saved.avatar))state.avatar=saved.avatar;if(validAvatar(saved.background))state.background=saved.background;if(validUrl(saved.url))state.url=saved.url;state.profiles=saved.profiles&&typeof saved.profiles==='object'?saved.profiles:{};state.history=Array.isArray(saved.history)?saved.history:[];if(validId(saved.me)&&!saved.me.startsWith('000000')){state.me=saved.me;state.registered=true}state.rivals=Array.isArray(saved.rivals)?saved.rivals.filter(r=>r&&validId(r.id)&&!r.id.startsWith('000000')&&validAvatar(r.avatar)):[];if(saved.me&&!state.me)q('#cy-storage').textContent='サンプル登録を終了しました。タイトルから実際の選手を登録してください。'}const cached=await read(db,'settings','saj-dataset');if(cached){try{applyDataset(validateDataset(cached));notice='端末の保存データを表示しています。'}catch{}}}else q('#cy-storage').textContent='端末保存が利用できません。';if(location.hostname.endsWith('.github.io'))state.url=new URL('./',location.href).href;if(!dataset){try{const response=await fetch('./saj-data.json');applyDataset(validateDataset(await response.json()));if(db)await write(db,'settings','saj-dataset',dataset)}catch{notice='初期データを取得できません。通信を確認してください。'}}ready=true;render();await refresh()})();
 })();
