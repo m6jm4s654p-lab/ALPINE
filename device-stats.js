@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const ID_KEY = 'yukinaka.stats.device.v1';
-  const SENT_KEY = 'yukinaka.stats.registered.v1';
+  const TOUCH_KEY = 'yukinaka.stats.latest.v2';
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   let pending = null;
   let retryAfter = 0;
@@ -46,11 +46,14 @@
           id = crypto.randomUUID();
           localStorage.setItem(ID_KEY, id);
         }
+        const localNow=new Date(Date.now()+9*3600000);
+        const weekKey=localNow.getUTCFullYear()+'-'+(localNow.getUTCMonth()+1)+'-'+(Math.floor((localNow.getUTCDate()-1)/7)+1);
         const receipt = `${endpoint()}:${id}`;
-        if (localStorage.getItem(SENT_KEY) === receipt) return;
+        let previous;try{previous=JSON.parse(localStorage.getItem(TOUCH_KEY)||'null')}catch{previous=null}
+        if(previous?.receipt===receipt&&previous.weekKey===weekKey&&Number.isFinite(previous.time)&&Date.now()>=previous.time&&Date.now()-previous.time<300000)return;
         const result = await post({ action: 'register', deviceId: id });
         if (result.ok !== true) throw Error('Registration failed');
-        localStorage.setItem(SENT_KEY, receipt);
+        localStorage.setItem(TOUCH_KEY, JSON.stringify({receipt,weekKey,time:Date.now()}));
       } catch {
         // Storage blocked or offline: never generate ephemeral IDs or block the app.
         retryAfter = Date.now() + 60000;
@@ -66,15 +69,21 @@
   }
 
   window.YukiNakaStats = Object.freeze({
-    isAdminCandidate: value => /^[a-z0-9]{8,80}$/i.test(value.trim()) && !/^(YN4|AC3)/i.test(value.trim()),
-    async getTotal(code) {
+    isAdminCandidate: value => /^[a-z0-9]{8,80}$/i.test(value.trim()) && !/^(YN|AC3)/i.test(value.trim()),
+    async getTotal(code) {return (await this.getReport(code)).total},
+    async getReport(code) {
       await registerLocked();
       const result = await post({ action: 'count', code: code.trim() });
       if (!Number.isSafeInteger(result.total) || result.total < 0) throw Error('端末数の応答を確認できません。');
-      return result.total;
+      if(result.weekly===undefined)return {total:result.total,historyAvailable:false};
+      if(!Number.isSafeInteger(result.unknown)||result.unknown<0||result.unknown>result.total||!Array.isArray(result.weekly))throw Error('アクセス履歴の応答を確認できません。');
+      const seen=new Set();
+      for(const r of result.weekly){const key=r.year+'-'+r.month+'-'+r.week;if(!Number.isInteger(r.year)||r.year<2000||r.year>9999||!Number.isInteger(r.month)||r.month<1||r.month>12||!Number.isInteger(r.week)||r.week<1||r.week>5||!Number.isSafeInteger(r.count)||r.count<0||r.count>result.total||seen.has(key))throw Error('アクセス履歴の応答を確認できません。');seen.add(key)}
+      return {...result,historyAvailable:true,weekly:result.weekly.slice().sort((a,b)=>b.year-a.year||b.month-a.month||b.week-a.week)};
     },
   });
   void registerLocked();
   window.addEventListener('online', () => { void registerLocked(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void registerLocked(); });
 })();
+
