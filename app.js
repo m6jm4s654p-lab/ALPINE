@@ -134,7 +134,7 @@ function stats(){
  chart();
 }
 function validUiTheme(value){return value==='fancy'||value==='original'}
-function applyUiTheme(){const theme=validUiTheme(state.uiTheme)?state.uiTheme:'original';root.dataset.uiTheme=theme;all('[data-ui-version]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.uiVersion===theme)));const status=q('#cy-ui-status');if(status)status.textContent=theme==='fancy'?'ゆき・なかver を使用中':'オリジナルver を使用中'}
+function applyUiTheme(){const theme=validUiTheme(state.uiTheme)?state.uiTheme:'original';root.dataset.uiTheme=theme;const brand=q('#cy-brand');if(brand)brand.textContent=theme==='fancy'?'ゆき・なか':'Yuki-Naka';all('[data-ui-version]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.uiVersion===theme)));const status=q('#cy-ui-status');if(status)status.textContent=theme==='fancy'?'ゆき・なかver を使用中':'オリジナルver を使用中'}
 function render(){applyUiTheme();
  all('[data-screen]').forEach(p=>p.hidden=p.dataset.screen!==screen);q('nav').hidden=['title','register'].includes(screen);all('nav [data-go]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===screen));
  q('#cy-title-register').disabled=!ready||dataBusy;
