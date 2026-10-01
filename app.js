@@ -162,9 +162,54 @@ function stopScan(){scanGeneration++;clearTimeout(scanTimer);scanTimer=null;scan
 function setExchangeMode(mode){stopScan();receiveGeneration++;received=null;exchangeMode=mode;q('#cy-received').hidden=true;q('#cy-ex-status').textContent='';for(const m of ['own','scan','input'])q('#cy-ex-'+m).hidden=m!==mode;if(mode==='own')showOwnCode();if(mode==='scan')startScan();if(mode==='input')q('#cy-friend-code').focus()}
 async function showOwnCode(){if(!state.me){q('#cy-ex-status').textContent='タイトル画面で自分を登録してください。';return}const key=state.me+':'+state.avatar;if(key!==ownCodeKey){ownCodeKey=key;ownCodePromise=encodeCard(state.me,state.avatar)}try{const code=await ownCodePromise;if(key!==ownCodeKey||exchangeMode!=='own'||screen!=='exchange')return;q('#cy-own-code').value=code;qr(q('#cy-ex-qr'),code)}catch{ownCodeKey='';q('#cy-ex-status').textContent='コードを作成できません。HTTPSで開き直してください。'}}
 async function receiveCode(value){if(value.trim().toUpperCase()==='YN42038'){receiveGeneration++;received=null;state.missionFull=true;save();q('#cy-received').hidden=true;q('#cy-ex-status').textContent='裏コードを適用しました。ミッションをすべて解放しました！';render();return}const request=++receiveGeneration;received=null;q('#cy-received').hidden=true;q('#cy-ex-status').textContent='コードを確認しています…';try{if(window.YukiNakaStats?.isAdminCandidate(value)){q('#cy-friend-code').value='';const total=await window.YukiNakaStats.getTotal(value);if(request!==receiveGeneration||screen!=='exchange')return;q('#cy-ex-status').textContent='管理者モード：累計アクセス端末数 約'+total.toLocaleString('ja-JP')+'台（集計開始以降・ブラウザー単位）';return}const r=await decodeCard(value);if(r.id===state.me)throw Error('自分のカードは友達に追加できません。');if(!who(r.id))await loadPerson(r.id);if(request!==receiveGeneration||screen!=='exchange')return;received=r;card(q('#cy-received-card'),r.id,r.avatar,false);q('#cy-received').hidden=false;q('#cy-ex-status').textContent='この選手を友達一覧に追加します。'}catch(e){if(request===receiveGeneration)q('#cy-ex-status').textContent=e.message}}
-async function startScan(){const generation=scanGeneration,v=q('#cy-qr-video');try{if(!navigator.mediaDevices?.getUserMedia)throw Error('unsupported');q('#cy-ex-status').textContent='カメラを準備しています…';const stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});if(generation!==scanGeneration){stream.getTracks().forEach(t=>t.stop());return}scanStream=stream;v.srcObject=stream;await v.play();if(generation!==scanGeneration)return;q('#cy-ex-status').textContent='友達のQRを枠内に映してください。';const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});const scan=()=>{if(generation!==scanGeneration)return;try{if(v.readyState>=2&&v.videoWidth){const scale=Math.min(1,720/v.videoWidth);canvas.width=Math.round(v.videoWidth*scale);canvas.height=Math.round(v.videoHeight*scale);ctx.drawImage(v,0,0,canvas.width,canvas.height);const im=ctx.getImageData(0,0,canvas.width,canvas.height),found=jsQR(im.data,im.width,im.height,{inversionAttempts:'attemptBoth'});if(found){stopScan();q('#cy-ex-scan').hidden=true;receiveCode(found.data);return}}}catch{stopScan();q('#cy-ex-status').textContent='読み取れませんでした。もう一度試すかコードを入力してください。';return}scanTimer=setTimeout(scan,180)};scan()}catch(e){if(generation!==scanGeneration)return;stopScan();q('#cy-ex-status').textContent=e.name==='NotAllowedError'?'カメラが許可されていません。ブラウザーの設定で許可するか、友達のコードを入力してください。':'カメラを利用できません。友達のコードを入力してください。'}}
+function cameraMessage(e){return e.name==='NotAllowedError'?'カメラの使用が許可されていません。端末のカメラ設定を確認するか、下の「カメラで撮影」「QR画像を選択」を使ってください。':e.name==='NotFoundError'?'カメラが見つかりません。QR画像を選択してください。':'カメラ映像を開始できません。再試行するか、下の「カメラで撮影」「QR画像を選択」を使ってください。'}
+async function startScan(){
+ const generation=scanGeneration,v=q('#cy-qr-video');
+ try{
+  if(!navigator.mediaDevices?.getUserMedia)throw Error('unsupported');
+  v.muted=true;v.autoplay=true;v.playsInline=true;v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','');
+  q('#cy-ex-status').textContent='カメラの使用を許可してください。映像が出ない場合は下の撮影・画像選択を使えます。';
+  let stream;
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'}}})}
+  catch(e){if(generation!==scanGeneration)return;if(!['OverconstrainedError','NotFoundError'].includes(e.name))throw e;stream=await navigator.mediaDevices.getUserMedia({audio:false,video:true})}
+  if(generation!==scanGeneration){stream.getTracks().forEach(t=>t.stop());return}
+  scanStream=stream;v.srcObject=stream;
+  // Bound playback waiting; a stale permission result is stopped above.
+  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('playback timeout')),12000);Promise.resolve(v.play()).then(()=>{clearTimeout(timer);resolve()},e=>{clearTimeout(timer);reject(e)})});
+  if(generation!==scanGeneration)return;
+  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true}),started=Date.now();let hasFrame=false;
+  q('#cy-ex-status').textContent='友達のQRを枠内に映してください。';
+  const scan=()=>{
+   if(generation!==scanGeneration)return;
+   try{
+    if(v.readyState>=2&&v.videoWidth&&v.videoHeight){hasFrame=true;const scale=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight));canvas.width=Math.round(v.videoWidth*scale);canvas.height=Math.round(v.videoHeight*scale);ctx.drawImage(v,0,0,canvas.width,canvas.height);const im=ctx.getImageData(0,0,canvas.width,canvas.height),found=jsQR(im.data,im.width,im.height,{inversionAttempts:'attemptBoth'});if(found){stopScan();q('#cy-ex-scan').hidden=true;receiveCode(found.data);return}}
+    if(!hasFrame&&Date.now()-started>12000)throw Error('no camera frames');
+   }catch(e){stopScan();q('#cy-ex-status').textContent=cameraMessage(e);return}
+   scanTimer=setTimeout(scan,180);
+  };scan();
+ }catch(e){if(generation!==scanGeneration)return;stopScan();q('#cy-ex-status').textContent=cameraMessage(e)}
+}
+function pickQrImage(selector){stopScan();receiveGeneration++;received=null;q('#cy-received').hidden=true;q('#cy-ex-status').textContent='QRを撮影するか、QR画像を選択してください。';q(selector).value='';q(selector).click()}
+async function readQrImage(e){
+ const file=e.target.files?.[0];e.target.value='';if(!file)return;
+ const generation=scanGeneration,request=receiveGeneration;
+ q('#cy-ex-status').textContent='QR画像を読み取っています…';let image,url;
+ try{
+  url=URL.createObjectURL(file);image=new Image();image.src=url;await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject});
+  if(generation!==scanGeneration||request!==receiveGeneration||screen!=='exchange')return;
+  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});let found=null;
+  for(const size of [1600,2400,800]){const scale=Math.min(1,size/Math.max(image.naturalWidth,image.naturalHeight));canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));ctx.drawImage(image,0,0,canvas.width,canvas.height);const im=ctx.getImageData(0,0,canvas.width,canvas.height);found=jsQR(im.data,im.width,im.height,{inversionAttempts:'attemptBoth'});if(found)break}
+  if(!found)throw Error('QRを読み取れませんでした。QR全体が大きく、はっきり写った画像を選んでください。');
+  q('#cy-ex-scan').hidden=true;await receiveCode(found.data);
+ }catch(err){if(generation===scanGeneration&&request===receiveGeneration&&screen==='exchange')q('#cy-ex-status').textContent=err.message||'画像を開けませんでした。別の画像を選んでください。'}
+ finally{if(url)URL.revokeObjectURL(url)}
+}
+q('#cy-qr-retry').onclick=()=>setExchangeMode('scan');
+q('#cy-qr-capture').onclick=()=>pickQrImage('#cy-qr-capture-file');q('#cy-qr-image').onclick=()=>pickQrImage('#cy-qr-image-file');
+q('#cy-qr-capture-file').onchange=q('#cy-qr-image-file').onchange=readQrImage;
+
 q('#cy-show-own').onclick=()=>setExchangeMode('own');q('#cy-scan-friend').onclick=()=>setExchangeMode('scan');q('#cy-input-friend').onclick=()=>setExchangeMode('input');q('#cy-stop-scan').onclick=()=>{setExchangeMode('');q('#cy-ex-status').textContent='カメラを停止しました。'};q('#cy-copy-code').onclick=async()=>{try{await navigator.clipboard.writeText(q('#cy-own-code').value);q('#cy-ex-status').textContent='コードをコピーしました。'}catch{q('#cy-own-code').select();q('#cy-ex-status').textContent='コードを選択しました。コピーしてください。'}};
-window.addEventListener('pagehide',stopScan);document.addEventListener('visibilitychange',()=>{if(document.hidden&&exchangeMode==='scan'){stopScan();q('#cy-ex-status').textContent='カメラを停止しました。再開するには読み込みボタンを押してください。'}});
+window.addEventListener('pagehide',stopScan);document.addEventListener('visibilitychange',()=>{if(document.hidden&&exchangeMode==='scan'&&scanStream){stopScan();q('#cy-ex-status').textContent='カメラを停止しました。再開するには読み込みボタンを押してください。'}});
 
 let holoEnabled=false,holoFrame=0,holoX=50,holoY=50;
 const reducedHolo=matchMedia('(prefers-reduced-motion: reduce)');
