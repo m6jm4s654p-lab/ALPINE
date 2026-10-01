@@ -90,7 +90,9 @@ function themeStyle(id){
  return {name:`${name}・${patternNames[p]}`,background:patterns[p],ink,muted};
 }
 function applyCardTheme(panel,id){const t=themeStyle(id);panel.style.background=t.background;panel.style.color=t.ink;panel.style.setProperty('--card-muted',t.muted);panel.style.borderColor=t.muted;panel.dataset.theme=id;panel.classList.toggle("rare-card",id>=100);panel.classList.toggle("ssr-card",id>=105);panel.dataset.rarity=id===109?"ULTRA":id>=105?"SSR":id>=100?"SR":""}
+function updateThemeVisibility(){const owned=!!state.me&&premiumOwner===state.me;all('[data-theme-group]').forEach(b=>{b.hidden=+b.dataset.themeGroup===4&&!owned});if(themeGroup===4&&!owned){themeGroup=1;themePage=0}}
 function renderThemes(){
+ updateThemeVisibility();
  if(!themeAllowed(themeDraft))themeDraft=50;
  const preview=q('#cy-theme-preview');card(preview,state.me,state.avatar,false,true);applyCardTheme(preview.firstElementChild,themeDraft);if(themeDraft>=105){if(!preview.querySelector(".holo-texture"))attachHolo(preview.firstElementChild)}else{preview.querySelectorAll(".holo-texture,.holo-enable").forEach(e=>e.remove())}
  q('#cy-theme-name').textContent=themeStyle(themeDraft).name;all('[data-theme-group]').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.themeGroup===themeGroup));q('#cy-theme-grid').replaceChildren();
