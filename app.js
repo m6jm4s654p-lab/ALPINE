@@ -130,12 +130,12 @@ function stats(){
  chart();
 }
 function render(){
- all('[data-screen]').forEach(p=>p.hidden=p.dataset.screen!==screen);q('nav').hidden=['title','register'].includes(screen);q('.top-actions').hidden=['title','register'].includes(screen);all('nav [data-go]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===screen));
+ all('[data-screen]').forEach(p=>p.hidden=p.dataset.screen!==screen);q('nav').hidden=['title','register'].includes(screen);all('nav [data-go]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===screen));
  q('#cy-title-register').disabled=!ready||dataBusy;
  all('[data-go=register]').forEach(b=>b.disabled=!ready);
  q('#cy-data-status').textContent=notice;
  const me=who(state.me);
- q('nav [data-go=rank]').hidden=!missionUnlocked(5);q('nav').style.gridTemplateColumns=missionUnlocked(5)?'repeat(5,1fr)':'repeat(4,1fr)';if(screen==='rank')renderRank();if(ready)checkUnlocks();if(screen==='stats')stats();
+ q('nav [data-go=rank]').hidden=!missionUnlocked(5);q('nav').style.gridTemplateColumns=missionUnlocked(5)?'repeat(6,minmax(0,1fr))':'repeat(5,minmax(0,1fr))';if(screen==='rank')renderRank();if(ready)checkUnlocks();if(screen==='stats')stats();
  if(screen==='card'){q('[data-go=avatar]').hidden=!me;q('[data-go=background]').hidden=!me;if(me)card(q('#cy-own-card'),state.me,state.avatar,true,true);else q('#cy-own-card').textContent='タイトル画面から自分の選手を登録してください。'}
  if(screen==='background')renderThemes();if(screen==='avatar')picker();
  if(screen==='exchange'){q('#cy-show-own').disabled=!me;q('#cy-received').hidden=!received;}
@@ -269,4 +269,5 @@ document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
 new ResizeObserver(()=>{if(screen==='stats')chart()}).observe(q('#cy-chart'));
 (async()=>{const db=await dbReady;if(db){const saved=await read(db,'settings','state');if(saved){state.missionFull=saved.missionFull===true;if(validCardAvatar(saved.avatar))state.avatar=saved.avatar;if(validBackground(saved.background))state.background=saved.background;state.rankIds=Array.isArray(saved.rankIds)?saved.rankIds.filter(validId):[];state.rewardSeen=Array.isArray(saved.rewardSeen)?saved.rewardSeen.filter(n=>[5,10,20].includes(n)):[];if(validUrl(saved.url))state.url=saved.url;state.profiles=saved.profiles&&typeof saved.profiles==='object'?saved.profiles:{};state.history=Array.isArray(saved.history)?saved.history:[];if(validId(saved.me)&&(saved.me===FIXED_ID||!saved.me.startsWith('000000'))){state.me=saved.me;state.registered=true}state.rivals=Array.isArray(saved.rivals)?saved.rivals.filter(r=>r&&validId(r.id)&&(r.id===FIXED_ID||!r.id.startsWith('000000'))&&validCardAvatar(r.avatar)):[];if(saved.me&&!state.me)q('#cy-storage').textContent='サンプル登録を終了しました。タイトルから実際の選手を登録してください。'}const cached=await read(db,'settings','saj-dataset');if(cached){try{applyDataset(validateDataset(cached));notice='端末の保存データを表示しています。'}catch{}}}else q('#cy-storage').textContent='端末保存が利用できません。';if(location.hostname.endsWith('.github.io'))state.url=new URL('./',location.href).href;if(!dataset){try{const response=await fetch('./saj-data.json');applyDataset(validateDataset(await response.json()));if(db)await write(db,'settings','saj-dataset',dataset)}catch{notice='初期データを取得できません。通信を確認してください。'}}ready=true;if(state.registered&&who(state.me))screen='card';render();await refresh()})();
 })();
+
 
