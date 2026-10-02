@@ -1,2 +1,7 @@
+# Per-request user verification is performed inside the rare-cards handler.
+[functions.rare-cards]
+verify_jwt = false
+
+# Preserve the existing public device-stats endpoint setting.
 [functions.device-stats]
 verify_jwt = false
