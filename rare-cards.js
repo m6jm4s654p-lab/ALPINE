@@ -3,7 +3,7 @@
   const root = document.getElementById('snow-cyber');
   const q = selector => root.querySelector(selector);
   const names = ['Mikaela Shiffrin', 'Lindsey Vonn', 'Marcel Hirscher', 'Aleksander Aamodt Kilde', 'Petra Vlhová', 'Lara Gut-Behrami', 'Federica Brignone', 'Marco Odermatt', 'Henrik Kristoffersen', 'Sofia Goggia'];
-  const catalog = names.map((name, i) => ({ id: `rare_${String(i + 1).padStart(3, '0')}`, name, imageUrl: `./rare-cards/rare_${String(i + 1).padStart(3, '0')}.png` }));
+  const catalog = names.map((name, i) => ({ id: `rare_${String(i + 1).padStart(3, '0')}`, name, imageUrl: `./rare_${String(i + 1).padStart(3, '0')}.png` }));
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const launchId = crypto.randomUUID();
   let session = null, busy = false, booted = false, drawDone = false, drawRetry = false;
