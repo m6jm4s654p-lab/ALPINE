@@ -28,11 +28,28 @@ function validateDataset(d){
  for(const a of d.athletes){if(!validId(a.id)||ids.has(a.id)||typeof a.name!=='string'||!a.name||typeof a.pref!=='string'||typeof a.team!=='string'||!['男子','女子'].includes(a.sex)||!['K2','一般','未確認'].includes(a.category)||!a.points||!['SL','GS','SG'].every(k=>a.points[k]===null||(typeof a.points[k]==='number'&&Number.isFinite(a.points[k])&&a.points[k]>=0)))throw Error('不完全なSAJデータのため更新しません。');ids.add(a.id)}
  return d;
 }
+function profileList(p){
+ const match=/^(\d{4}) No\.(\d+)$/.exec(p?.listLabel||'');
+ return {season:p?.pointSeasonCode??(match?+match[1]:0),number:p?.pointListNumber??(match?+match[2]:0)};
+}
+function syncPublishedProfiles(d){
+ let changed=false;
+ for(const id of new Set([state.me,...state.rivals.map(r=>r.id)].filter(Boolean))){
+  if(id===FIXED_ID)continue;
+  const person=d.athletes.find(a=>a.id===id);if(!person)continue;
+  const old=state.profiles[id],list=profileList(old);
+  if(list.season>d.season||(list.season===d.season&&list.number>d.listNumber))continue;
+  if(list.season===d.season&&list.number===d.listNumber&&Date.parse(old?.checkedAt)>Date.parse(d.checkedAt))continue;
+  const next={...old,...person,pendingProfile:false,pointSeasonCode:d.season,pointListNumber:d.listNumber,listLabel:`${d.season} No.${d.listNumber}`,checkedAt:d.checkedAt};
+  if(JSON.stringify(old)!==JSON.stringify(next)){state.profiles[id]=next;changed=true;}
+  if(id===state.me){const key=`${id}:${d.season}:${d.listNumber}`,entry={key,label:next.listLabel,points:person.points};
+   if(JSON.stringify(state.history.find(h=>h.key===key))!==JSON.stringify(entry)){state.history=state.history.filter(h=>h.key!==key);state.history.push(entry);state.history=state.history.slice(-24);changed=true;}}
+ }
+ if(changed)save();
+}
 function applyDataset(d){
  dataset=d;roster=d.athletes;
- for(const id of [state.me,...state.rivals.map(r=>r.id)].filter(Boolean)){const person=roster.find(a=>a.id===id);if(person&&!state.profiles[id])state.profiles[id]={...person,listLabel:`${d.season} No.${d.listNumber}`}}
- const me=roster.find(a=>a.id===state.me);
- if(me&&!state.profiles[me.id]?.checkedAt){const key=`${me.id}:${d.season}:${d.listNumber}`,entry={key,label:`${d.season} No.${d.listNumber}`,points:me.points};state.history=state.history.filter(x=>x.key!==key);state.history.push(entry);state.history=state.history.slice(-24)}
+ syncPublishedProfiles(d);
  const oldPref=q('#cy-pref').value;prefs();if([...q('#cy-pref').options].some(o=>o.value===oldPref))q('#cy-pref').value=oldPref;
  if(screen==='register')candidates();render();
 }
@@ -72,7 +89,7 @@ function prefs(){const names='北海道 青森 岩手 宮城 秋田 山形 福�
 
 const API='https://snowtech-saj-api.take6583.workers.dev';
 function weekBoundary(now=Date.now()){const d=new Date(now+9*3600000);d.setUTCHours(0,0,0,0);d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+3)%7);return d.getTime()-9*3600000}
-function profileMeta(p){if(p?.id===FIXED_ID)return '固定ポイント · 更新対象外';return p?.checkedAt?`${p.listLabel} · 取得 ${dateText(p.checkedAt)}`:`初期データ · ${metadata()}`}
+function profileMeta(p){if(p?.id===FIXED_ID)return '固定ポイント · 更新対象外';return p?.checkedAt?`${p.listLabel} · 取得 ${dateText(p.checkedAt)}`:`公開リスト · ${metadata()}`}
 async function api(path){const r=await fetch(API+path,{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(45000)});if(!r.ok)throw Error('SAJ通信エラー');const d=await r.json();if(!d.ok)throw Error('SAJ取得失敗');return d}
 function normalized(a,meta={}){const id=String(a.saj),old=who(id)||{};if(!validId(id)||!a.name)throw Error('選手情報不正');return {id,name:a.name,team:a.team||old.team||'',pref:meta.pref||a.organization||old.pref||'',sex:meta.sex||(a.sex==='女'?'女子':'男子'),category:old.category||'未確認',points:old.points||{SL:null,GS:null,SG:null}}}
 async function loadPerson(id){if(id===FIXED_ID){state.profiles[id]=fixedPlayer();return}const epoch=dataEpoch;const d=await api('/api/saj-athlete?saj='+encodeURIComponent(id));if(epoch===dataEpoch)state.profiles[id]=normalized(d.athlete);}
@@ -168,7 +185,7 @@ function stats(){
  const row=(name,values)=>{const tr=document.createElement('tr'),th=document.createElement('th');th.scope='row';th.textContent=name;tr.append(th);for(const v of values){const td=document.createElement('td');td.textContent=v;tr.append(td)}body.append(tr)};
  row('所持pt',['SL','GS','SG'].map(k=>point(me?.points?.[k])));
  row('順位用pt',['SL','GS','SG'].map(k=>point(dataset?.athletes.find(a=>a.id===state.me)?.points[k])));
- for(const label of ['県内','全国'])row(label,['SL','GS','SG'].map(k=>{const rank=rankingValue(dataset,state.me,k,label==='県内');return rank===null?'—':rank+'位'}));
+ for(const label of ['各都道府県内','全国'])row(label,['SL','GS','SG'].map(k=>{const rank=rankingValue(dataset,state.me,k,label==='各都道府県内');return rank===null?'—':rank+'位'}));
  chart();
 }
 function validUiTheme(value){return value==='fancy'||value==='original'}
@@ -184,6 +201,8 @@ function render(){applyUiTheme();
  if(screen==='card'){q('[data-go=avatar]').hidden=!me;q('[data-go=background]').hidden=!me;if(me)card(q('#cy-own-card'),state.me,state.avatar,true,true);else q('#cy-own-card').textContent='タイトル画面から自分の選手を登録してください。'}
  if(screen==='background')renderThemes();if(screen==='avatar')picker();
  if(screen==='exchange'){q('#cy-show-own').disabled=!me;q('#cy-received').hidden=!received;}
+ q('#cy-rivals-refresh').disabled=!!refreshing;
+ q('#cy-rivals-status').textContent=[notice,rankingNotice].filter(Boolean).join(' ');
  if(screen==='rivals'){q('#cy-rivals').replaceChildren();if(!state.rivals.length)q('#cy-rivals').textContent='「友達追加」から友達のカードを追加してください。';for(const r of state.rivals){const host=document.createElement('div');q('#cy-rivals').append(host);card(host,r.id,r.avatar,true,false,r.background)}}
  if(screen==='share'){const url=validUrl(state.url);q('#cy-share-ready').hidden=!url;q('#cy-share-pending').hidden=!!url;q('#cy-url').value=state.url;if(url){q('#cy-share-url').textContent=url;qr(q('#cy-share-qr'),url)}}
 }
@@ -307,7 +326,7 @@ all('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
 all('[data-gender]').forEach(b=>b.onclick=()=>{gender=+b.dataset.gender;page=0;picker()});q('#cy-prev').onclick=()=>{page=0;picker()};q('#cy-next').onclick=()=>{page=1;picker()};q('#cy-avatar-save').onclick=()=>{if(!validAvatar(draft))return;state.avatar=draft;save();go('card')};
 q('#cy-pref').onchange=q('#cy-sex').onchange=()=>{candidates();loadCandidates()};q('#cy-search').oninput=candidates;
 q('#cy-register').onclick=()=>{const me=selected===FIXED_ID&&q('#cy-search').value===FIXED_QUERY?fixedPlayer():roster.find(a=>a.id===selected);if(!me)return;state.me=me.id;state.registered=true;state.rivals=state.rivals.filter(r=>r.id!==me.id);received=null;q('#cy-ex-status').textContent='';state.profiles[me.id]=me.id===FIXED_ID?fixedPlayer():{...me,...state.profiles[me.id]};save();go('card')};
-q('#cy-refresh').onclick=()=>refresh(true);all('[data-theme-group]').forEach(b=>b.onclick=()=>{themeGroup=+b.dataset.themeGroup;themePage=0;renderThemes()});q('#cy-theme-prev').onclick=()=>{themePage=0;renderThemes()};q('#cy-theme-next').onclick=()=>{themePage=1;renderThemes()};q('#cy-theme-save').onclick=()=>{if(!themeAllowed(themeDraft))return;state.background=themeDraft;save();go('card')};
+q('#cy-refresh').onclick=()=>refresh(true);q('#cy-rivals-refresh').onclick=()=>refresh(true);all('[data-theme-group]').forEach(b=>b.onclick=()=>{themeGroup=+b.dataset.themeGroup;themePage=0;renderThemes()});q('#cy-theme-prev').onclick=()=>{themePage=0;renderThemes()};q('#cy-theme-next').onclick=()=>{themePage=1;renderThemes()};q('#cy-theme-save').onclick=()=>{if(!themeAllowed(themeDraft))return;state.background=themeDraft;save();go('card')};
 q('#cy-receive').onclick=()=>receiveCode(q('#cy-friend-code').value);
 q('#cy-add').onclick=()=>{if(!received)return;const idx=state.rivals.findIndex(r=>r.id===received.id);if(idx<0)state.rivals.push({...received});else state.rivals[idx]={...received};const person=who(received.id)||pendingPerson(received.id);state.profiles[received.id]={...person,listLabel:person.listLabel||(dataset?`${dataset.season} No.${dataset.listNumber}`:'選手情報取得待ち')};received=null;save();go('rivals')};
 q('#cy-camera').onclick=()=>q('#cy-camera-file').click();q('#cy-gallery').onclick=()=>q('#cy-gallery-file').click();q('#cy-camera-file').onchange=q('#cy-gallery-file').onchange=e=>{photoTask=choosePhoto(e)};q('#cy-photo-back').onclick=()=>go(photoBack);
