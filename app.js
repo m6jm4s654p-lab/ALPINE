@@ -5,6 +5,7 @@ const atlases=[...window.ALPINE_ATLASES,"./animal-avatars.png","./animal-mascots
 let state={me:null,registered:false,avatar:null,background:50,rivals:[],url:'',profiles:{},history:[],rankIds:[],rewardSeen:[],missionFull:false,premium:null,uiTheme:'original'},roster=[],dataset=null;
 let screen='title',gender=0,page=0,draft=0,selected=null,received=null,photoKey=null,photoBack='card',dirty=false;
 let writeQueue=Promise.resolve(),refreshing=null,lastAttempt=0,notice='',ready=false;
+let rankingAttempt=0,rankingNotice='公開リストを確認していません。';
 const photos=new Map(),photoUrls=new Map();
 const dbReady=new Promise(resolve=>{try{const r=indexedDB.open('alpine-cyber-local',1);r.onupgradeneeded=()=>{r.result.createObjectStore('settings');r.result.createObjectStore('photos')};r.onsuccess=()=>resolve(r.result);r.onerror=r.onblocked=()=>resolve(null)}catch{resolve(null)}});
 function read(db,store,key){return new Promise(resolve=>{try{const r=db.transaction(store).objectStore(store).get(key);r.onsuccess=()=>resolve(r.result);r.onerror=()=>resolve(null)}catch{resolve(null)}})}
@@ -35,6 +36,38 @@ function applyDataset(d){
  const oldPref=q('#cy-pref').value;prefs();if([...q('#cy-pref').options].some(o=>o.value===oldPref))q('#cy-pref').value=oldPref;
  if(screen==='register')candidates();render();
 }
+// Refresh the complete published list independently of individual API points.
+async function refreshRanking(force=false){
+ if(!force&&rankingAttempt&&Date.now()-rankingAttempt<3600000)return;
+ rankingAttempt=Date.now();const epoch=dataEpoch;
+ try{
+  const response=await fetch('./saj-data.json',{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(30000)});
+  if(!response.ok)throw Error('公開リスト取得失敗');
+  const next=validateDataset(await response.json());
+  if(epoch!==dataEpoch)return;
+  if(dataset&&(next.season<dataset.season||(next.season===dataset.season&&next.listNumber<dataset.listNumber)||
+    (next.season===dataset.season&&next.listNumber===dataset.listNumber&&Date.parse(next.checkedAt)<Date.parse(dataset.checkedAt))))throw Error('旧リスト');
+  applyDataset(next);
+  rankingNotice=Date.now()-Date.parse(next.checkedAt)>86400000?'公開リストの取得から24時間以上経過しています。最新リストの反映が遅れている可能性があります。':'公開リストを確認しました。公式公開から反映まで時間差があります。';
+  const db=await dbReady;if(epoch!==dataEpoch)return;
+  if(db&&!await write(db,'settings','saj-dataset',next))rankingNotice+=' この端末には保存できませんでした。';
+ }catch{
+  if(epoch!==dataEpoch)return;
+  rankingNotice=dataset?'公開リストを確認できません。前回取得したリストの参考順位です。':'公開リストを取得できないため順位を表示できません。';
+ }
+}
+function rankingValue(list,id,event,prefOnly=false){
+ const current=list?.athletes.find(a=>a.id===id);
+ if(!current||current.category==='未確認'||current.points[event]===null)return null;
+ return 1+list.athletes.filter(a=>a.sex===current.sex&&(current.category==='一般'||a.category==='K2')&&
+  (!prefOnly||a.pref===current.pref)&&a.points[event]!==null&&a.points[event]<current.points[event]).length;
+}
+function rankingMeta(){
+ if(!dataset)return '順位データ未取得';
+ const person=dataset.athletes.find(a=>a.id===state.me);
+ return `順位の基準：${metadata()}`+(person?` · ${person.sex} / ${person.category==='一般'?'一般（K2を含む全選手）':person.category} / ${person.pref}`:' · このリストに登録選手が見つかりません');
+}
+
 function prefs(){const names='北海道 青森 岩手 宮城 秋田 山形 福島 茨城 栃木 群馬 埼玉 千葉 東京 神奈川 新潟 富山 石川 福井 山梨 長野 岐阜 静岡 愛知 三重 滋賀 京都 大阪 兵庫 奈良 和歌山 鳥取 島根 岡山 広島 山口 徳島 香川 愛媛 高知 福岡 佐賀 長崎 熊本 大分 宮崎 鹿児島 沖縄'.split(' ');q('#cy-pref').replaceChildren(new Option('都道府県名を選択してください',''));for(const n of names)q('#cy-pref').append(new Option(n==='北海道'?n:n+(['東京'].includes(n)?'都':['京都','大阪'].includes(n)?'府':'県'),n));const extra=[...new Set(roster.map(a=>a.pref))].filter(n=>n&&!names.includes(n));for(const n of extra)q('#cy-pref').append(new Option(n,n));q('#cy-pref').value=''}
 
 const API='https://snowtech-saj-api.take6583.workers.dev';
@@ -49,9 +82,10 @@ async function refresh(force=false){
  if(dataBusy)return;
  if(refreshing){await refreshing;return refresh(force)}
  const ids=[...new Set([state.me,...state.rivals.map(r=>r.id)].filter(Boolean))].filter(id=>id!==FIXED_ID).filter(id=>force||((Date.parse(who(id)?.checkedAt)||0)<weekBoundary()&&Date.now()-(attempts.get(id)||0)>600000));
- if(!ids.length)return;
+ const rankingDue=force||!rankingAttempt||Date.now()-rankingAttempt>=3600000;
+ if(!ids.length&&!rankingDue)return;
  notice='この端末のSAJポイントを更新しています…';
- refreshing=(async()=>{let failed=0;const queue=[...ids];await Promise.all(Array.from({length:Math.min(3,ids.length)},async()=>{while(queue.length){const id=queue.shift();attempts.set(id,Date.now());try{if(!who(id)||who(id).pendingProfile)await loadPerson(id);await updatePoints(id)}catch{failed++}}}));notice=failed?`${failed}名の更新を確認できません。前回のデータを保持しています。`:'この端末のSAJポイントを確認しました。次回は木曜以降の起動・表示時に更新します。';})().finally(()=>{refreshing=null;render()});render();return refreshing;
+ refreshing=(async()=>{await refreshRanking(force);let failed=0;const queue=[...ids];await Promise.all(Array.from({length:Math.min(3,ids.length)},async()=>{while(queue.length){const id=queue.shift();attempts.set(id,Date.now());try{if(!who(id)||who(id).pendingProfile)await loadPerson(id);await updatePoints(id)}catch{failed++}}}));notice=!ids.length?'':failed?`${failed}名の更新を確認できません。前回のデータを保持しています。`:'この端末のSAJポイントを確認しました。次回は木曜以降の起動・表示時に更新します。';})().finally(()=>{refreshing=null;render()});render();return refreshing;
 }
 let candidatesRequest=0;const candidateChecks=new Map();
 async function loadCandidates(){const epoch=dataEpoch;const pref=q('#cy-pref').value,sex=q('#cy-sex').value,key=pref+sex,request=++candidatesRequest;if(!pref||candidateChecks.get(key)>=weekBoundary())return;q('#cy-register-status').textContent='SAJの選手一覧を取得しています…';try{const d=await api('/api/saj-athletes?sex='+encodeURIComponent(sex==='女子'?'女':'男')+'&organization='+encodeURIComponent(pref));if(epoch!==dataEpoch)return;if(!Array.isArray(d.athletes)||!d.athletes.length)throw Error();const people=d.athletes.map(a=>normalized(a,{pref,sex}));const fresh=new Map(people.map(a=>[a.id,a]));roster=roster.filter(a=>!fresh.has(a.id)).concat(people);candidateChecks.set(key,Date.now());if(request===candidatesRequest&&screen==='register'){candidates();q('#cy-register-status').textContent=`SAJ一覧取得済み · ${people.length}名（検索で絞り込み）`}}catch{if(request===candidatesRequest)q('#cy-register-status').textContent='最新一覧を取得できません。保存済みの選手から選択できます。'}}
@@ -128,12 +162,13 @@ function chart(){
 }
 function stats(){
  const me=who(state.me);q('#cy-me').textContent=me?`${me.name} · ${me.category} · ${me.sex} · ${me.pref}`:'タイトル画面から自分の選手を登録してください。';
- q('#cy-data-meta').textContent=profileMeta(me);q('#cy-data-status').textContent=notice;q('#cy-refresh').disabled=!!refreshing;
+ q('#cy-data-meta').textContent=profileMeta(me);q('#cy-data-status').textContent=[notice,rankingNotice].filter(Boolean).join(' ');
+ q('#cy-rank-meta').textContent=rankingMeta();q('#cy-refresh').disabled=!!refreshing;
  const body=q('#cy-stats');body.replaceChildren();
  const row=(name,values)=>{const tr=document.createElement('tr'),th=document.createElement('th');th.scope='row';th.textContent=name;tr.append(th);for(const v of values){const td=document.createElement('td');td.textContent=v;tr.append(td)}body.append(tr)};
  row('所持pt',['SL','GS','SG'].map(k=>point(me?.points?.[k])));
- const current=dataset?.athletes.find(a=>a.id===state.me);
- for(const label of ['県内','全国']){row(label+'（初期リスト）',['SL','GS','SG'].map(k=>{if(!current||current.category==='未確認'||current.points[k]===null)return '—';const peers=dataset.athletes.filter(a=>a.sex===current.sex&&a.category===current.category&&(label==='全国'||a.pref===current.pref));return (1+peers.filter(a=>a.points[k]!==null&&a.points[k]<current.points[k]).length)+'位'}))}
+ row('順位用pt',['SL','GS','SG'].map(k=>point(dataset?.athletes.find(a=>a.id===state.me)?.points[k])));
+ for(const label of ['県内','全国'])row(label,['SL','GS','SG'].map(k=>{const rank=rankingValue(dataset,state.me,k,label==='県内');return rank===null?'—':rank+'位'}));
  chart();
 }
 function validUiTheme(value){return value==='fancy'||value==='original'}
@@ -142,7 +177,8 @@ function render(){applyUiTheme();
  all('[data-screen]').forEach(p=>p.hidden=p.dataset.screen!==screen);q('nav').hidden=['title','register'].includes(screen);all('nav [data-go]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.go===screen));
  q('#cy-title-register').disabled=!ready||dataBusy;
  all('[data-go=register]').forEach(b=>b.disabled=!ready);
- q('#cy-data-status').textContent=notice;
+ q('#cy-data-status').textContent=[notice,rankingNotice].filter(Boolean).join(' ');
+ q('#cy-rank-meta').textContent=rankingMeta();
  const me=who(state.me);
  q('nav [data-go=rank]').hidden=!missionUnlocked(5);q('nav').style.gridTemplateColumns=missionUnlocked(5)?'repeat(6,minmax(0,1fr))':'repeat(5,minmax(0,1fr))';if(screen==='rank')renderRank();if(ready)checkUnlocks();if(screen==='stats')stats();
  if(screen==='card'){q('[data-go=avatar]').hidden=!me;q('[data-go=background]').hidden=!me;if(me)card(q('#cy-own-card'),state.me,state.avatar,true,true);else q('#cy-own-card').textContent='タイトル画面から自分の選手を登録してください。'}
@@ -253,7 +289,7 @@ let dataEpoch=0,dataBusy=false,confirmResolve=null,photoTask=Promise.resolve();
 function askData(message){q('#cy-confirm-message').textContent=message;q('#cy-confirm').showModal();return new Promise(resolve=>{confirmResolve=resolve})}
 function answerData(value){q('#cy-confirm').close();const resolve=confirmResolve;confirmResolve=null;resolve?.(value)}
 q('#cy-confirm-yes').onclick=()=>answerData(true);q('#cy-confirm-no').onclick=()=>answerData(false);q('#cy-confirm').oncancel=e=>{e.preventDefault();answerData(false)};
-function releasePersonalMemory(){stopScan();receiveGeneration++;dataEpoch++;for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();photos.clear();received=null;selected=null;photoKey=null;ownCodeKey='';ownCodePromise=null;attempts.clear();candidateChecks.clear();candidatesRequest++;state=emptyState();premiumOwner=null;notice='';q('#cy-storage').textContent='';q('#cy-search').value='';q('#cy-sex').value='男子';q('#cy-friend-code').value='';q('#cy-own-code').value='';q('#cy-ex-qr').replaceChildren();q('#cy-received-card').replaceChildren();q('#cy-own-card').replaceChildren();q('#cy-rivals').replaceChildren();q('#cy-photo-preview').removeAttribute('src');}
+function releasePersonalMemory(){stopScan();receiveGeneration++;dataEpoch++;for(const url of photoUrls.values())URL.revokeObjectURL(url);photoUrls.clear();photos.clear();received=null;selected=null;photoKey=null;ownCodeKey='';ownCodePromise=null;attempts.clear();rankingAttempt=0;rankingNotice='公開リストを確認していません。';candidateChecks.clear();candidatesRequest++;state=emptyState();premiumOwner=null;notice='';q('#cy-storage').textContent='';q('#cy-search').value='';q('#cy-sex').value='男子';q('#cy-friend-code').value='';q('#cy-own-code').value='';q('#cy-ex-qr').replaceChildren();q('#cy-received-card').replaceChildren();q('#cy-own-card').replaceChildren();q('#cy-rivals').replaceChildren();q('#cy-photo-preview').removeAttribute('src');}
 async function replaceStoredData(next,images,seed){const db=await dbReady;if(!db)throw Error('この環境では端末保存を利用できません。');await writeQueue;await new Promise((resolve,reject)=>{const tx=db.transaction(['settings','photos'],'readwrite');tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(Error('保存できませんでした。現在のデータは変更していません。'));try{const settings=tx.objectStore('settings'),pics=tx.objectStore('photos');settings.clear();pics.clear();if(next)settings.put(next,'state');if(seed)settings.put(seed,'saj-dataset');for(const image of images)pics.put(image.blob,image.key)}catch{tx.abort()}});}
 async function beginRegistration(){if(!ready||dataBusy)return;if(!state.registered){go('register');return}const yes=await askData('現在の登録内容をすべてクリアして新規登録しますか？');if(!yes){go('card');return}dataBusy=true;ready=false;q('#cy-storage').textContent='データをクリアしています…';try{if(refreshing)await refreshing;await photoTask;await replaceStoredData(null,[],null);releasePersonalMemory();roster=dataset?.athletes||[];prefs();ready=true;screen='title';go('register')}catch(e){q('#cy-storage').textContent=e.message}finally{dataBusy=false;ready=true;render()}}
 function allPhotos(db){return new Promise((resolve,reject)=>{const tx=db.transaction('photos'),req=tx.objectStore('photos').openCursor(),result=[];req.onsuccess=()=>{const c=req.result;if(c){result.push({key:c.key,blob:c.value});c.continue()}};tx.oncomplete=()=>resolve(result);tx.onerror=tx.onabort=()=>reject(Error('写真を読み込めませんでした。'))})}
